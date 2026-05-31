@@ -89,10 +89,11 @@ def get_ytdlp_opts(cookie_file: str = None, extra: dict = None) -> dict:
     return opts
 
 def get_client_strategies():
+    # optimized client sequence to hit working ones first
     return [
         {"youtube": {"player_client": ["tvhtml5"], "skip": []}},
-        {"youtube": {"player_client": ["web_embedded"], "skip": []}},
         {"youtube": {"player_client": ["android"], "skip": []}},
+        {"youtube": {"player_client": ["web_embedded"], "skip": []}},
         {"youtube": {"player_client": ["web"], "skip": []}}
     ]
 
@@ -117,7 +118,7 @@ def info():
     
     for strategy in get_client_strategies():
         try:
-            opts = get_ytdlp_opts(cookie_file, extra={"extractor_args": strategy})
+            opts = get_ytdlp_opts(cookie_file, extra={"extractor_args": strategy, "format": "b/best"})
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info_dict = ydl.extract_info(norm_url, download=False)
                 if info_dict: break
@@ -144,9 +145,9 @@ def info():
 def run_download(norm_url, quality, output_dir, cookie, ea):
     output_template = os.path.join(output_dir, "%(title)s.%(ext)s")
     
-    # Format selection completely simplified to avoid strict missing format errors
+    # CRITICAL FIX: Always request standard mixed stream (b) first to bypass format blocks
     if quality == "audio":
-        format_spec = "ba/bestaudio"
+        format_spec = "b/best"
         ydl_opts = get_ytdlp_opts(cookie, extra={
             "format": format_spec, 
             "outtmpl": output_template, 
@@ -156,9 +157,9 @@ def run_download(norm_url, quality, output_dir, cookie, ea):
     else:
         th = QUALITY_MAP[quality]
         if th:
-            format_spec = f"worstvideo[height>={th}]+bestaudio/best[height<={th}]/best"
+            format_spec = f"best[height<={th}]/b/best"
         else:
-            format_spec = "best"
+            format_spec = "b/best"
             
         ydl_opts = get_ytdlp_opts(cookie, extra={
             "format": format_spec, 
@@ -208,7 +209,15 @@ def download():
 
     filepath = os.path.join(output_dir, files[0])
     video_title = info_dict.get("title", "video")
-    filename = f"{sanitize(video_title)}.mp3" if quality == "audio" else f"{sanitize(video_title)}_{quality}p.mp4"
+    
+    # Dynamic extension matching based on what was actually generated
+    actual_ext = os.path.splitext(files[0])[1].lower()
+    if quality == "audio":
+        filename = f"{sanitize(video_title)}.mp3"
+        content_type = "audio/mpeg"
+    else:
+        filename = f"{sanitize(video_title)}_{quality}p{actual_ext}"
+        content_type = "video/mp4" if actual_ext == ".mp4" else f"video/{actual_ext[1:]}"
     
     def stream_and_cleanup():
         try:
@@ -219,7 +228,7 @@ def download():
 
     headers = {
         "Content-Disposition": f'attachment; filename="{sanitize(filename).encode("ascii", "ignore").decode("ascii")}"',
-        "Content-Type": "audio/mpeg" if quality == "audio" else "video/mp4",
+        "Content-Type": content_type,
         "Content-Length": str(os.path.getsize(filepath)),
     }
     return Response(stream_and_cleanup(), headers=headers)
@@ -227,4 +236,4 @@ def download():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
-    
+        
