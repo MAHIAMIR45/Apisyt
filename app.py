@@ -1,10 +1,10 @@
 import os
 import re
 import json
+import random
 import shutil
 import tempfile
 import threading
-import subprocess
 from flask import Flask, request, Response, jsonify
 from flask_cors import CORS
 import yt_dlp
@@ -16,6 +16,28 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 TEMP_DIR = os.path.join(BASE_DIR, "temp_downloads")
 COOKIES_FILE = os.path.join(BASE_DIR, "cookies.json")
 os.makedirs(TEMP_DIR, exist_ok=True)
+
+# ─── Webshare Proxy List (rotating) ───────────────────────────────────────────
+_USER = "gpxjaoxt"
+_PASS = "trexu8zcabdr"
+
+PROXIES = [
+    f"http://{_USER}:{_PASS}@38.154.203.95:5863",
+    f"http://{_USER}:{_PASS}@198.105.121.200:6462",
+    f"http://{_USER}:{_PASS}@64.137.96.74:6641",
+    f"http://{_USER}:{_PASS}@209.127.138.10:5784",
+    f"http://{_USER}:{_PASS}@38.154.185.97:6370",
+    f"http://{_USER}:{_PASS}@84.247.60.125:6095",
+    f"http://{_USER}:{_PASS}@142.111.67.146:5611",
+    f"http://{_USER}:{_PASS}@191.96.254.138:6185",
+    f"http://{_USER}:{_PASS}@31.58.9.4:6077",
+    f"http://{_USER}:{_PASS}@104.239.107.47:5699",
+]
+
+def get_random_proxy() -> str:
+    return random.choice(PROXIES)
+
+# ──────────────────────────────────────────────────────────────────────────────
 
 QUALITY_MAP = {
     "2160": 2160,
@@ -61,7 +83,6 @@ def normalize_url(url: str) -> str:
 
 
 def json_cookies_to_netscape(json_path: str) -> str:
-    """Convert Cookie Editor JSON format to Netscape cookie file format."""
     tmp = tempfile.NamedTemporaryFile(
         mode='w', suffix='.txt', delete=False, dir=TEMP_DIR
     )
@@ -70,13 +91,13 @@ def json_cookies_to_netscape(json_path: str) -> str:
         with open(json_path) as f:
             cookies = json.load(f)
         for c in cookies:
-            domain = c.get('domain', '.youtube.com')
-            flag = 'FALSE' if c.get('hostOnly') else 'TRUE'
-            path = c.get('path', '/')
-            secure = 'TRUE' if c.get('secure') else 'FALSE'
-            expires = int(c.get('expirationDate', 0))
-            name = c.get('name', '')
-            value = c.get('value', '')
+            domain   = c.get('domain', '.youtube.com')
+            flag     = 'FALSE' if c.get('hostOnly') else 'TRUE'
+            path     = c.get('path', '/')
+            secure   = 'TRUE' if c.get('secure') else 'FALSE'
+            expires  = int(c.get('expirationDate', 0))
+            name     = c.get('name', '')
+            value    = c.get('value', '')
             tmp.write(f"{domain}\t{flag}\t{path}\t{secure}\t{expires}\t{name}\t{value}\n")
     except Exception:
         pass
@@ -89,45 +110,45 @@ def get_ytdlp_opts(cookie_file: str, extra: dict = None) -> dict:
         "cookiefile": cookie_file,
         "quiet": True,
         "noplaylist": True,
-        # FIX #1: js_runtimes hata diya — invalid option tha, crash ka asli wajah
-        # Render ke liye web client use karo jo bina Node.js ke kaam karta hai
+        "proxy": get_random_proxy(),          # har request pe random proxy
         "extractor_args": {
             "youtube": {
-                "player_client": ["web", "android"],
+                "player_client": ["android", "web", "ios"],
+                "skip": ["translated_subs"],
             }
         },
         "http_headers": {
             "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "Mozilla/5.0 (Linux; Android 13; Pixel 7) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/124.0.0.0 Safari/537.36"
-            )
+                "Chrome/116.0.0.0 Mobile Safari/537.36"
+            ),
+            "Accept-Language": "en-US,en;q=0.9",
         },
+        "sleep_interval_requests": 1,
+        "sleep_interval": 1,
+        "max_sleep_interval": 3,
     }
     if extra:
         opts.update(extra)
     return opts
 
 
+# ─── Routes ───────────────────────────────────────────────────────────────────
+
 @app.route("/")
 def index():
     return jsonify({
         "name": "YouTube Downloader API",
-        "version": "3.1.0",
-        "description": "YouTube videos (Shorts + long) download karo — koi bhi quality",
+        "version": "3.3.0",
+        "proxy": "rotating (10 proxies)",
         "endpoints": {
-            "GET /info?url=<youtube_url>": "Video info aur available qualities dekho",
-            "GET /qualities": "Saari supported qualities ki list",
-            "GET /download?url=<youtube_url>&quality=<quality>": "Video download karo",
+            "GET /info?url=<youtube_url>":                       "Video info",
+            "GET /qualities":                                     "Supported qualities",
+            "GET /download?url=<youtube_url>&quality=<quality>": "Video download",
         },
         "supported_qualities": list(QUALITY_MAP.keys()),
         "quality_descriptions": QUALITY_LABELS,
-        "examples": {
-            "info": "/info?url=https://youtube.com/shorts/Ibw50eCG6bQ",
-            "download_720p": "/download?url=https://youtube.com/shorts/Ibw50eCG6bQ&quality=720",
-            "download_1080p": "/download?url=https://youtu.be/jNQXAC9IVRw&quality=1080",
-            "download_audio": "/download?url=https://youtu.be/jNQXAC9IVRw&quality=audio",
-        },
     })
 
 
@@ -143,35 +164,22 @@ def qualities():
 def info():
     url = request.args.get("url", "").strip()
     if not url:
-        return jsonify({
-            "error": "url parameter zaroor chahiye",
-            "example": "/info?url=https://youtube.com/shorts/Ibw50eCG6bQ",
-        }), 400
+        return jsonify({"error": "url parameter zaroor chahiye"}), 400
 
-    norm_url = normalize_url(url)
+    norm_url    = normalize_url(url)
     cookie_file = json_cookies_to_netscape(COOKIES_FILE)
     try:
-        opts = get_ytdlp_opts(cookie_file)
-        with yt_dlp.YoutubeDL(opts) as ydl:
+        with yt_dlp.YoutubeDL(get_ytdlp_opts(cookie_file)) as ydl:
             info_dict = ydl.extract_info(norm_url, download=False)
 
-        title = info_dict.get("title", "Unknown")
         duration = info_dict.get("duration")
-        author = info_dict.get("uploader") or info_dict.get("channel", "Unknown")
-        views = info_dict.get("view_count")
-        thumbnail = info_dict.get("thumbnail", "")
-
         seen_heights = set()
         available_resolutions = []
         for fmt in info_dict.get("formats", []):
             h = fmt.get("height")
             if h and h not in seen_heights:
                 seen_heights.add(h)
-                available_resolutions.append({
-                    "height": h,
-                    "label": f"{h}p",
-                    "api_quality": str(h),
-                })
+                available_resolutions.append({"height": h, "label": f"{h}p", "api_quality": str(h)})
         available_resolutions.sort(key=lambda x: x["height"], reverse=True)
 
         has_audio = any(
@@ -179,18 +187,16 @@ def info():
             for fmt in info_dict.get("formats", [])
         )
 
-        is_short = "/shorts/" in url or (duration is not None and duration <= 60)
-
         return jsonify({
-            "title": title,
-            "duration_seconds": duration,
-            "author": author,
-            "views": views,
-            "thumbnail_url": thumbnail,
-            "is_short": is_short,
+            "title":                info_dict.get("title", "Unknown"),
+            "duration_seconds":     duration,
+            "author":               info_dict.get("uploader") or info_dict.get("channel", "Unknown"),
+            "views":                info_dict.get("view_count"),
+            "thumbnail_url":        info_dict.get("thumbnail", ""),
+            "is_short":             "/shorts/" in url or (duration is not None and duration <= 60),
             "available_resolutions": available_resolutions,
-            "audio_available": has_audio,
-            "api_qualities": list(QUALITY_MAP.keys()),
+            "audio_available":      has_audio,
+            "api_qualities":        list(QUALITY_MAP.keys()),
             "download_links": {
                 q: f"/download?url={url}&quality={q}"
                 for q in ["1080", "720", "480", "360", "audio"]
@@ -198,10 +204,7 @@ def info():
         })
 
     except Exception as e:
-        err = str(e)
-        if "Private video" in err or "not available" in err.lower():
-            return jsonify({"error": "Video unavailable ya private hai"}), 404
-        return jsonify({"error": err}), 500
+        return jsonify({"error": str(e)}), 500
     finally:
         try:
             os.unlink(cookie_file)
@@ -211,23 +214,18 @@ def info():
 
 @app.route("/download")
 def download():
-    url = request.args.get("url", "").strip()
+    url     = request.args.get("url", "").strip()
     quality = request.args.get("quality", "720").strip()
 
     if not url:
-        return jsonify({
-            "error": "url parameter zaroor chahiye",
-            "example": "/download?url=https://youtube.com/shorts/Ibw50eCG6bQ&quality=720",
-        }), 400
-
+        return jsonify({"error": "url parameter zaroor chahiye"}), 400
     if quality not in QUALITY_MAP:
         return jsonify({
             "error": f"Quality '{quality}' supported nahi hai",
             "supported_qualities": list(QUALITY_MAP.keys()),
-            "descriptions": QUALITY_LABELS,
         }), 400
 
-    norm_url = normalize_url(url)
+    norm_url   = normalize_url(url)
     output_dir = tempfile.mkdtemp(dir=TEMP_DIR)
     cookie_file = json_cookies_to_netscape(COOKIES_FILE)
 
@@ -235,9 +233,8 @@ def download():
         output_template = os.path.join(output_dir, "%(title)s.%(ext)s")
 
         if quality == "audio":
-            format_spec = "bestaudio[ext=m4a]/bestaudio/best"
             ydl_opts = get_ytdlp_opts(cookie_file, {
-                "format": format_spec,
+                "format": "bestaudio[ext=m4a]/bestaudio/best",
                 "outtmpl": output_template,
                 "postprocessors": [{
                     "key": "FFmpegExtractAudio",
@@ -248,9 +245,9 @@ def download():
         else:
             target_height = QUALITY_MAP[quality]
             if target_height is None:
-                format_spec = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext=mp4]/best"
+                fmt = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext=mp4]/best"
             else:
-                format_spec = (
+                fmt = (
                     f"bestvideo[height<={target_height}][ext=mp4]+bestaudio[ext=m4a]"
                     f"/bestvideo[height<={target_height}]+bestaudio"
                     f"/best[height<={target_height}][ext=mp4]"
@@ -259,7 +256,7 @@ def download():
                     f"/best[ext=mp4]/best"
                 )
             ydl_opts = get_ytdlp_opts(cookie_file, {
-                "format": format_spec,
+                "format": fmt,
                 "outtmpl": output_template,
                 "merge_output_format": "mp4",
             })
@@ -278,7 +275,6 @@ def download():
             if info_dict:
                 video_title = info_dict.get("title", video_title)
 
-        # FIX #2: .part / .ytdl temp files filter karo — pehle galat file stream ho sakti thi
         files = [
             f for f in os.listdir(output_dir)
             if not f.endswith('.part') and not f.endswith('.ytdl')
@@ -287,14 +283,13 @@ def download():
             return jsonify({"error": "Download failed — koi file nahi bani"}), 500
 
         filepath = os.path.join(output_dir, files[0])
+        safe_title = sanitize(video_title)
 
         if quality == "audio":
-            safe_title = sanitize(video_title)
-            filename = f"{safe_title}.mp3"
+            filename     = f"{safe_title}.mp3"
             content_type = "audio/mpeg"
         else:
-            safe_title = sanitize(video_title)
-            filename = f"{safe_title}_{quality}p.mp4"
+            filename     = f"{safe_title}_{quality}p.mp4"
             content_type = "video/mp4"
 
         filesize = os.path.getsize(filepath)
@@ -308,52 +303,39 @@ def download():
                             break
                         yield chunk
             finally:
-                # FIX #3: cleanup dono cheezein — output_dir aur cookie_file
                 def cleanup():
-                    try:
-                        shutil.rmtree(output_dir, ignore_errors=True)
-                    except Exception:
-                        pass
-                    try:
-                        os.unlink(cookie_file)
-                    except Exception:
-                        pass
-                t = threading.Thread(target=cleanup, daemon=True)
-                t.start()
+                    try: shutil.rmtree(output_dir, ignore_errors=True)
+                    except Exception: pass
+                    try: os.unlink(cookie_file)
+                    except Exception: pass
+                threading.Thread(target=cleanup, daemon=True).start()
 
-        ascii_title = sanitize(video_title).encode("ascii", "ignore").decode("ascii")[:100]
+        ascii_title    = safe_title.encode("ascii", "ignore").decode("ascii")[:100]
         ascii_filename = sanitize(filename).encode("ascii", "ignore").decode("ascii")
 
-        headers = {
-            "Content-Disposition": f'attachment; filename="{ascii_filename}"',
-            "Content-Type": content_type,
-            "Content-Length": str(filesize),
-            "X-Video-Quality": quality,
-            "X-Video-Title": ascii_title,
-        }
-
-        return Response(stream_and_cleanup(), headers=headers, status=200)
+        return Response(
+            stream_and_cleanup(),
+            headers={
+                "Content-Disposition": f'attachment; filename="{ascii_filename}"',
+                "Content-Type":        content_type,
+                "Content-Length":      str(filesize),
+                "X-Video-Quality":     quality,
+                "X-Video-Title":       ascii_title,
+            },
+            status=200,
+        )
 
     except Exception as e:
         shutil.rmtree(output_dir, ignore_errors=True)
-        try:
-            os.unlink(cookie_file)
-        except Exception:
-            pass
-        err = str(e)
-        if "Private video" in err or "not available" in err.lower():
-            return jsonify({"error": "Video unavailable ya private hai"}), 404
-        return jsonify({"error": err}), 500
+        try: os.unlink(cookie_file)
+        except Exception: pass
+        return jsonify({"error": str(e)}), 500
 
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
     print(f"\n{'='*55}")
-    print(f"  YouTube Downloader API v3.1")
+    print(f"  YouTube Downloader API v3.3  —  10 rotating proxies")
     print(f"  http://localhost:{port}/")
-    print(f"{'='*55}")
-    print(f"  Info:     /info?url=<youtube_url>")
-    print(f"  Download: /download?url=<youtube_url>&quality=720")
-    print(f"  Qualities: /qualities")
     print(f"{'='*55}\n")
     app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
