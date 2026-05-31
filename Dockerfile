@@ -1,12 +1,14 @@
-# Light weight Python base package
 FROM python:3.10-slim
 
-# Tools aur compiler dependencies install karein
+# Tools, FFmpeg aur NODE.JS install karein (Signature decode karne ke liye)
 RUN apt-get update && apt-get install -y \
     ffmpeg \
     build-essential \
     libssl-dev \
     libffi-dev \
+    curl \
+    && curl -fsSL https://deb.nodesource.com/setup_18.x | bash - \
+    && apt-get install -y openssh-server nodejs \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
