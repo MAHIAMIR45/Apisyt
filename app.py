@@ -244,21 +244,22 @@ def download():
             })
         else:
             target_height = QUALITY_MAP[quality]
+            # Shorts aur normal videos dono ke liye reliable fallback chain
             if target_height is None:
-                fmt = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext=mp4]/best"
+                fmt = "bestvideo+bestaudio/best"
             else:
                 fmt = (
-                    f"bestvideo[height<={target_height}][ext=mp4]+bestaudio[ext=m4a]"
-                    f"/bestvideo[height<={target_height}]+bestaudio"
-                    f"/best[height<={target_height}][ext=mp4]"
+                    f"bestvideo[height<={target_height}]+bestaudio"
                     f"/best[height<={target_height}]"
-                    f"/bestvideo[ext=mp4]+bestaudio[ext=m4a]"
-                    f"/best[ext=mp4]/best"
+                    f"/bestvideo+bestaudio"   # height match na ho to best available lo
+                    f"/best"                  # last resort — koi bhi format
                 )
             ydl_opts = get_ytdlp_opts(cookie_file, {
                 "format": fmt,
                 "outtmpl": output_template,
                 "merge_output_format": "mp4",
+                # mp4 prefer karo lekin zaroor nahi
+                "format_sort": ["res", "ext:mp4:m4a", "size"],
             })
 
         video_title = "video"
