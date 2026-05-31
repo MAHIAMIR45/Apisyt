@@ -113,10 +113,10 @@ def get_ytdlp_opts(cookie_file: str, extra: dict = None) -> dict:
         "proxy": get_random_proxy(),          # har request pe random proxy
         "extractor_args": {
             "youtube": {
-                # tv_embedded: server pe best — nsig issue nahi, cookies bhi support karta hai
-                # web_creator: fallback
+                # web_creator: YouTube Studio client — server pe reliable, cookies support karta hai
+                # mweb: mobile web — different rate limits
                 # web: last resort
-                "player_client": ["tv_embedded", "web_creator", "web"],
+                "player_client": ["web_creator", "mweb", "web"],
                 "skip": ["translated_subs"],
             }
         },
@@ -343,4 +343,3 @@ if __name__ == "__main__":
     print(f"  http://localhost:{port}/")
     print(f"{'='*55}\n")
     app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
-    
