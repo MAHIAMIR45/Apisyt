@@ -60,12 +60,13 @@ def normalize_url(url: str) -> str:
 
 
 def json_cookies_to_netscape(json_path: str) -> str:
-    """Convert Cookie Editor JSON format to Netscape cookie file format."""
-    tmp = tempfile.NamedTemporaryFile(
-        mode='w', suffix='.txt', delete=False, dir=TEMP_DIR
-    )
-    tmp.write("# Netscape HTTP Cookie File\n\n")
+    if not os.path.exists(json_path):
+        return None
     try:
+        tmp = tempfile.NamedTemporaryFile(
+            mode='w', suffix='.txt', delete=False, dir=TEMP_DIR
+        )
+        tmp.write("# Netscape HTTP Cookie File\n\n")
         with open(json_path) as f:
             cookies = json.load(f)
         for c in cookies:
@@ -77,16 +78,27 @@ def json_cookies_to_netscape(json_path: str) -> str:
             name = c.get('name', '')
             value = c.get('value', '')
             tmp.write(f"{domain}\t{flag}\t{path}\t{secure}\t{expires}\t{name}\t{value}\n")
+        tmp.close()
+        return tmp.name
     except Exception:
-        pass
-    tmp.close()
-    return tmp.name
+        return None
 
 
 def get_ytdlp_opts(cookie_file: str = None, extra: dict = None) -> dict:
+    """Yahan Bot Bypass, Chrome Impersonation aur Error 429 ka Fix lagaya gaya hai"""
     opts = {
         "quiet": True,
         "noplaylist": True,
+        "nocheckcertificate": True,       
+        "legacyserverconnect": True,      
+        "socket_timeout": 30,             
+        "retries": 10,                    
+        "extractor_retries": 5,
+        "impersonate": "chrome",          # <--- YEH YOUTUBE KE BOT BLOCK KO BYPASS KAREGA
+        "http_headers": {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept-Language": "en-US,en;q=0.9",
+        }
     }
     if cookie_file:
         opts["cookiefile"] = cookie_file
@@ -96,68 +108,39 @@ def get_ytdlp_opts(cookie_file: str = None, extra: dict = None) -> dict:
 
 
 def android_extractor_args():
-    return {
-        "youtube": {
-            "player_client": ["android"],
-            "skip": [],
-        },
-    }
+    return {"youtube": {"player_client": ["android"], "skip": []}}
 
 
 def web_extractor_args():
-    return {
-        "youtube": {
-            "player_client": ["web"],
-            "skip": [],
-        },
-    }
+    return {"youtube": {"player_client": ["web"], "skip": []}}
 
 
 @app.route("/")
 def index():
     return jsonify({
         "name": "YouTube Downloader API",
-        "version": "3.1.0",
-        "description": "YouTube videos (Shorts + long) download karo \u2014 koi bhi quality",
-        "endpoints": {
-            "GET /info?url=<youtube_url>": "Video info aur available qualities dekho",
-            "GET /qualities": "Saari supported qualities ki list",
-            "GET /download?url=<youtube_url>&quality=<quality>": "Video download karo",
-        },
+        "version": "3.1.0 (Render Bot-Bypass Fixed)",
+        "description": "YouTube videos download karo bina Error 429 ke",
         "supported_qualities": list(QUALITY_MAP.keys()),
-        "quality_descriptions": QUALITY_LABELS,
-        "examples": {
-            "info": "/info?url=https://youtube.com/shorts/Ibw50eCG6bQ",
-            "download_720p": "/download?url=https://youtube.com/shorts/Ibw50eCG6bQ&quality=720",
-            "download_1080p": "/download?url=https://youtu.be/jNQXAC9IVRw&quality=1080",
-            "download_audio": "/download?url=https://youtu.be/jNQXAC9IVRw&quality=audio",
-        },
     })
 
 
 @app.route("/qualities")
 def qualities():
-    return jsonify({
-        "supported_qualities": list(QUALITY_MAP.keys()),
-        "descriptions": QUALITY_LABELS,
-    })
+    return jsonify({"supported_qualities": list(QUALITY_MAP.keys())})
 
 
 def extract_info_internal(norm_url, cookie_file, ea):
-    """Try to extract video info with given params. Returns (info, error)."""
     try:
         opts = get_ytdlp_opts(cookie_file, extra={"extractor_args": ea})
         with yt_dlp.YoutubeDL(opts) as ydl:
             info_dict = ydl.extract_info(norm_url, download=False)
-
+            
         formats = info_dict.get("formats", [])
-        real_formats = [
-            f for f in formats
-            if f.get("vcodec", "none") != "none" or f.get("acodec", "none") != "none"
-        ]
+        real_formats = [f for f in formats if f.get("vcodec", "none") != "none" or f.get("acodec", "none") != "none"]
         if not real_formats:
             return None, "No formats found"
-
+            
         return info_dict, None
     except Exception as e:
         return None, str(e)
@@ -167,32 +150,24 @@ def extract_info_internal(norm_url, cookie_file, ea):
 def info():
     url = request.args.get("url", "").strip()
     if not url:
-        return jsonify({
-            "error": "url parameter zaroor chahiye",
-            "example": "/info?url=https://youtube.com/shorts/Ibw50eCG6bQ",
-        }), 400
+        return jsonify({"error": "url parameter zaroor chahiye"}), 400
 
     norm_url = normalize_url(url)
     cookie_file = json_cookies_to_netscape(COOKIES_FILE)
 
-    # Strategy 1: android client (no cookies) - fastest, works for most videos
+    # Strategy 1: Android client
     info_dict, err = extract_info_internal(norm_url, None, android_extractor_args())
 
-    # Strategy 2: try with cookies + web client (for age-restricted/private videos)
+    # Strategy 2: Web client + Cookies (Fall back if Bot Blocked or Private)
     if not info_dict and cookie_file:
         info_dict, err = extract_info_internal(norm_url, cookie_file, web_extractor_args())
 
-    # Cleanup cookie file
-    if cookie_file:
-        try:
-            os.unlink(cookie_file)
-        except Exception:
-            pass
+    if cookie_file and os.path.exists(cookie_file):
+        try: os.unlink(cookie_file)
+        except: pass
 
     if not info_dict:
-        if "Private video" in err or "not available" in err.lower():
-            return jsonify({"error": "Video unavailable ya private hai"}), 404
-        return jsonify({"error": err or "Could not extract video info"}), 500
+        return jsonify({"error": f"Failed to get info. Reason: {err}"}), 500
 
     title = info_dict.get("title", "Unknown")
     duration = info_dict.get("duration")
@@ -208,18 +183,10 @@ def info():
         vcodec = fmt.get("vcodec", "none")
         if h and h not in seen_heights and vcodec != "none":
             seen_heights.add(h)
-            available_resolutions.append({
-                "height": h,
-                "label": f"{h}p",
-                "api_quality": str(h),
-            })
+            available_resolutions.append({"height": h, "label": f"{h}p", "api_quality": str(h)})
     available_resolutions.sort(key=lambda x: x["height"], reverse=True)
 
-    has_audio = any(
-        fmt.get("acodec", "none") != "none" and fmt.get("vcodec", "none") == "none"
-        for fmt in formats
-    )
-
+    has_audio = any(fmt.get("acodec", "none") != "none" for fmt in formats)
     is_short = "/shorts/" in url or (duration is not None and duration <= 60)
 
     return jsonify({
@@ -231,12 +198,27 @@ def info():
         "is_short": is_short,
         "available_resolutions": available_resolutions,
         "audio_available": has_audio,
-        "api_qualities": list(QUALITY_MAP.keys()),
-        "download_links": {
-            q: f"/download?url={url}&quality={q}"
-            for q in ["1080", "720", "480", "360", "audio"]
-        },
+        "download_links": {q: f"/download?url={url}&quality={q}" for q in ["1080", "720", "480", "360", "audio"]},
     })
+
+
+def run_download(norm_url, quality, output_dir, cookie, ea):
+    output_template = os.path.join(output_dir, "%(title)s.%(ext)s")
+    if quality == "audio":
+        format_spec = "bestaudio[ext=m4a]/bestaudio/best"
+        ydl_opts = get_ytdlp_opts(cookie, extra={
+            "format": format_spec, "outtmpl": output_template, "extractor_args": ea,
+            "postprocessors": [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "192"}]
+        })
+    else:
+        th = QUALITY_MAP[quality]
+        format_spec = f"bestvideo[height<={th}][ext=mp4]+bestaudio[ext=m4a]/best[height<={th}][ext=mp4]/best" if th else "bestvideo+bestaudio/best"
+        ydl_opts = get_ytdlp_opts(cookie, extra={
+            "format": format_spec, "outtmpl": output_template, "merge_output_format": "mp4", "extractor_args": ea,
+        })
+
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        return ydl.extract_info(norm_url, download=True)
 
 
 @app.route("/download")
@@ -244,165 +226,54 @@ def download():
     url = request.args.get("url", "").strip()
     quality = request.args.get("quality", "720").strip()
 
-    if not url:
-        return jsonify({
-            "error": "url parameter zaroor chahiye",
-            "example": "/download?url=https://youtube.com/shorts/Ibw50eCG6bQ&quality=720",
-        }), 400
-
-    if quality not in QUALITY_MAP:
-        return jsonify({
-            "error": f"Quality '{quality}' supported nahi hai",
-            "supported_qualities": list(QUALITY_MAP.keys()),
-            "descriptions": QUALITY_LABELS,
-        }), 400
+    if not url or quality not in QUALITY_MAP:
+        return jsonify({"error": "Invalid URL or Quality"}), 400
 
     norm_url = normalize_url(url)
     output_dir = tempfile.mkdtemp(dir=TEMP_DIR)
     cookie_file = json_cookies_to_netscape(COOKIES_FILE)
 
-    def do_download(cookie, ea):
-        nonlocal output_dir
-        output_template = os.path.join(output_dir, "%(title)s.%(ext)s")
-
-        if quality == "audio":
-            format_spec = "bestaudio[ext=m4a]/bestaudio/best"
-            ydl_opts = get_ytdlp_opts(cookie, extra={
-                "format": format_spec,
-                "outtmpl": output_template,
-                "extractor_args": ea,
-                "postprocessors": [{
-                    "key": "FFmpegExtractAudio",
-                    "preferredcodec": "mp3",
-                    "preferredquality": "192",
-                }],
-            })
-        else:
-            target_height = QUALITY_MAP[quality]
-            if target_height is None:
-                format_spec = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext=mp4]/best"
-            else:
-                format_spec = (
-                    f"bestvideo[height<={target_height}][ext=mp4]+bestaudio[ext=m4a]"
-                    f"/bestvideo[height<={target_height}]+bestaudio"
-                    f"/best[height<={target_height}][ext=mp4]"
-                    f"/best[height<={target_height}]"
-                    f"/bestvideo[ext=mp4]+bestaudio[ext=m4a]"
-                    f"/best[ext=mp4]/best"
-                )
-            ydl_opts = get_ytdlp_opts(cookie, extra={
-                "format": format_spec,
-                "outtmpl": output_template,
-                "merge_output_format": "mp4",
-                "extractor_args": ea,
-            })
-
-        video_title = "video"
-
-        def progress_hook(d):
-            nonlocal video_title
-            if d.get("info_dict", {}).get("title"):
-                video_title = d["info_dict"]["title"]
-
-        ydl_opts["progress_hooks"] = [progress_hook]
-
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info_dict = ydl.extract_info(norm_url, download=True)
-            if info_dict:
-                video_title = info_dict.get("title", video_title)
-
-        files = os.listdir(output_dir)
-        if not files:
-            return None
-
-        filepath = os.path.join(output_dir, files[0])
-
-        if quality == "audio":
-            safe_title = sanitize(video_title)
-            filename = f"{safe_title}.mp3"
-            content_type = "audio/mpeg"
-        else:
-            safe_title = sanitize(video_title)
-            filename = f"{safe_title}_{quality}p.mp4"
-            content_type = "video/mp4"
-
-        filesize = os.path.getsize(filepath)
-
-        def stream_and_cleanup():
-            try:
-                with open(filepath, "rb") as f:
-                    while True:
-                        chunk = f.read(65536)
-                        if not chunk:
-                            break
-                        yield chunk
-            finally:
-                def cleanup():
-                    try:
-                        shutil.rmtree(output_dir, ignore_errors=True)
-                        if cookie:
-                            try:
-                                os.unlink(cookie)
-                            except Exception:
-                                pass
-                    except Exception:
-                        pass
-                t = threading.Thread(target=cleanup, daemon=True)
-                t.start()
-
-        ascii_title = sanitize(video_title).encode("ascii", "ignore").decode("ascii")[:100]
-        ascii_filename = sanitize(filename).encode("ascii", "ignore").decode("ascii")
-
-        headers = {
-            "Content-Disposition": f'attachment; filename="{ascii_filename}"',
-            "Content-Type": content_type,
-            "Content-Length": str(filesize),
-            "X-Video-Quality": quality,
-            "X-Video-Title": ascii_title,
-        }
-
-        return Response(stream_and_cleanup(), headers=headers, status=200)
+    info_dict, err_msg = None, ""
 
     try:
-        # Strategy 1: android client (no cookies) - fastest
-        result = do_download(None, android_extractor_args())
-        if result:
-            return result
-
-        # Strategy 2: cookies + web client (for age-restricted/private)
-        result = do_download(cookie_file, web_extractor_args())
-        if result:
-            return result
-
-        # Cleanup before returning error
-        shutil.rmtree(output_dir, ignore_errors=True)
-        if cookie_file:
-            try:
-                os.unlink(cookie_file)
-            except Exception:
-                pass
-        return jsonify({"error": "Download failed \u2014 koi file nahi bani"}), 500
+        info_dict = run_download(norm_url, quality, output_dir, None, android_extractor_args())
     except Exception as e:
-        shutil.rmtree(output_dir, ignore_errors=True)
+        err_msg = str(e)
+
+    if not info_dict and cookie_file:
         try:
-            if cookie_file:
-                os.unlink(cookie_file)
-        except Exception:
-            pass
-        err = str(e)
-        if "Private video" in err or "not available" in err.lower():
-            return jsonify({"error": "Video unavailable ya private hai"}), 404
-        return jsonify({"error": err}), 500
+            info_dict = run_download(norm_url, quality, output_dir, cookie_file, web_extractor_args())
+        except Exception as e:
+            err_msg = str(e)
+
+    if cookie_file and os.path.exists(cookie_file):
+        try: os.unlink(cookie_file)
+        except: pass
+
+    files = os.listdir(output_dir) if os.path.exists(output_dir) else []
+    if not info_dict or not files:
+        shutil.rmtree(output_dir, ignore_errors=True)
+        return jsonify({"error": f"Download failed: {err_msg}"}), 500
+
+    filepath = os.path.join(output_dir, files[0])
+    video_title = info_dict.get("title", "video")
+    filename = f"{sanitize(video_title)}.mp3" if quality == "audio" else f"{sanitize(video_title)}_{quality}p.mp4"
+    
+    def stream_and_cleanup():
+        try:
+            with open(filepath, "rb") as f:
+                while chunk := f.read(65536): yield chunk
+        finally:
+            threading.Thread(target=lambda: shutil.rmtree(output_dir, ignore_errors=True), daemon=True).start()
+
+    headers = {
+        "Content-Disposition": f'attachment; filename="{sanitize(filename).encode("ascii", "ignore").decode("ascii")}"',
+        "Content-Type": "audio/mpeg" if quality == "audio" else "video/mp4",
+        "Content-Length": str(os.path.getsize(filepath)),
+    }
+    return Response(stream_and_cleanup(), headers=headers)
 
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8000))
-    print(f"\n{'='*55}")
-    print(f"  YouTube Downloader API v3.1")
-    print(f"  http://localhost:{port}/")
-    print(f"{'='*55}")
-    print(f"  Info:     /info?url=<youtube_url>")
-    print(f"  Download: /download?url=<youtube_url>&quality=720")
-    print(f"  Qualities: /qualities")
-    print(f"{'='*55}\n")
+    port = int(os.environ.get("PORT", 10000))  # Render assigns dynamic ports
     app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
