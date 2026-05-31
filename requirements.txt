@@ -2,3 +2,4 @@ Flask==3.0.2
 Flask-CORS==4.0.0
 yt-dlp>=2025.01.15
 gunicorn==21.2.0
+curl_cffi>=0.7.0
