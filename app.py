@@ -85,7 +85,6 @@ def json_cookies_to_netscape(json_path: str) -> str:
 
 
 def get_ytdlp_opts(cookie_file: str = None, extra: dict = None) -> dict:
-    """Yahan Bot Bypass, Chrome Impersonation aur Error 429 ka Fix lagaya gaya hai"""
     opts = {
         "quiet": True,
         "noplaylist": True,
@@ -94,7 +93,7 @@ def get_ytdlp_opts(cookie_file: str = None, extra: dict = None) -> dict:
         "socket_timeout": 30,             
         "retries": 10,                    
         "extractor_retries": 5,
-        "impersonate": "chrome",          # <--- YEH YOUTUBE KE BOT BLOCK KO BYPASS KAREGA
+        "impersonate": "chrome",          # Bot block bypass setting
         "http_headers": {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Accept-Language": "en-US,en;q=0.9",
@@ -119,8 +118,8 @@ def web_extractor_args():
 def index():
     return jsonify({
         "name": "YouTube Downloader API",
-        "version": "3.1.0 (Render Bot-Bypass Fixed)",
-        "description": "YouTube videos download karo bina Error 429 ke",
+        "version": "3.1.5",
+        "description": "YouTube videos aur shorts download karein bina errors ke",
         "supported_qualities": list(QUALITY_MAP.keys()),
     })
 
@@ -158,7 +157,7 @@ def info():
     # Strategy 1: Android client
     info_dict, err = extract_info_internal(norm_url, None, android_extractor_args())
 
-    # Strategy 2: Web client + Cookies (Fall back if Bot Blocked or Private)
+    # Strategy 2: Web client + Cookies
     if not info_dict and cookie_file:
         info_dict, err = extract_info_internal(norm_url, cookie_file, web_extractor_args())
 
@@ -235,25 +234,33 @@ def download():
 
     info_dict, err_msg = None, ""
 
+    # Try Strategy 1
     try:
         info_dict = run_download(norm_url, quality, output_dir, None, android_extractor_args())
     except Exception as e:
-        err_msg = str(e)
+        err_msg = f"Android Client Error: {str(e)}"
 
+    # Try Strategy 2 if Strategy 1 fails
     if not info_dict and cookie_file:
         try:
             info_dict = run_download(norm_url, quality, output_dir, cookie_file, web_extractor_args())
         except Exception as e:
-            err_msg = str(e)
+            err_msg += f" | Web Client Error: {str(e)}"
 
     if cookie_file and os.path.exists(cookie_file):
         try: os.unlink(cookie_file)
         except: pass
 
     files = os.listdir(output_dir) if os.path.exists(output_dir) else []
+    
+    # Agar files array khali hai toh iska matlab download crash hua hai
     if not info_dict or not files:
         shutil.rmtree(output_dir, ignore_errors=True)
-        return jsonify({"error": f"Download failed: {err_msg}"}), 500
+        # Yahan clear message browser par dikhega
+        return jsonify({
+            "error": "Download failed. Video aur Audio merge nahi ho saki.",
+            "details": err_msg if err_msg else "No output files created. Check if FFmpeg is installed on Render."
+        }), 500
 
     filepath = os.path.join(output_dir, files[0])
     video_title = info_dict.get("title", "video")
@@ -275,5 +282,5 @@ def download():
 
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))  # Render assigns dynamic ports
+    port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
