@@ -75,8 +75,10 @@ def get_ytdlp_opts(cookie_file: str = None, extra: dict = None) -> dict:
         "retries": 10,                    
         "extractor_retries": 5,
         "http_headers": {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.9",
+            "Sec-Fetch-Mode": "navigate",
         }
     }
     if cookie_file:
@@ -85,11 +87,14 @@ def get_ytdlp_opts(cookie_file: str = None, extra: dict = None) -> dict:
         opts.update(extra)
     return opts
 
-def android_extractor_args():
-    return {"youtube": {"player_client": ["android"], "skip": []}}
-
-def web_extractor_args():
-    return {"youtube": {"player_client": ["web"], "skip": []}}
+# Alag alag legacy and modern structures ka secure extraction mix
+def get_client_strategies():
+    return [
+        {"youtube": {"player_client": ["web_embedded"], "skip": []}},
+        {"youtube": {"player_client": ["tvhtml5"], "skip": []}},
+        {"youtube": {"player_client": ["android"], "skip": []}},
+        {"youtube": {"player_client": ["web"], "skip": []}}
+    ]
 
 @app.route("/")
 def index():
@@ -107,31 +112,28 @@ def info():
     norm_url = normalize_url(url)
     cookie_file = json_cookies_to_netscape(COOKIES_FILE)
 
-    info_dict, err = None, "Unknown error"
+    info_dict = None
+    err_logs = []
     
-    # Strategy 1: Android Client (Bina cookies ke temporary check)
-    try:
-        opts = get_ytdlp_opts(None, extra={"extractor_args": android_extractor_args()})
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info_dict = ydl.extract_info(norm_url, download=False)
-    except Exception as e:
-        err = str(e)
-
-    # Strategy 2: Web Client (Cookies ke sath fallback)
-    if not info_dict and cookie_file:
+    # Iterate through multiple strategies until one hits
+    for strategy in get_client_strategies():
         try:
-            opts = get_ytdlp_opts(cookie_file, extra={"extractor_args": web_extractor_args()})
+            opts = get_ytdlp_opts(cookie_file, extra={"extractor_args": strategy})
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info_dict = ydl.extract_info(norm_url, download=False)
+                if info_dict: break
         except Exception as e:
-            err = str(e)
+            err_logs.append(str(e))
 
     if cookie_file and os.path.exists(cookie_file):
         try: os.unlink(cookie_file)
         except: pass
 
     if not info_dict:
-        return jsonify({"error": f"Failed to get info: {err}"}), 500
+        return jsonify({
+            "error": "Failed to get info from all parameters.",
+            "details": " | ".join(err_logs[:2])
+        }), 500
 
     return jsonify({
         "title": info_dict.get("title", "Unknown"),
@@ -150,8 +152,8 @@ def run_download(norm_url, quality, output_dir, cookie, ea):
         })
     else:
         th = QUALITY_MAP[quality]
-        # Flexible Fallbacks: Agar alag video+audio na miley toh single standard format auto-fetch ho jaye
-        format_spec = f"bestvideo[height<={th}][ext=mp4]+bestaudio[ext=m4a]/best[height<={th}][ext=mp4]/bestvideo[height<={th}]+bestaudio/best" if th else "bestvideo+bestaudio/best"
+        # Robust stream processing: Agar specialized streams block hon toh raw merge ya single progressive handle ho sake
+        format_spec = f"bestvideo[height<={th}][ext=mp4]+bestaudio[ext=m4a]/best[height<={th}][ext=mp4]/bestvideo[height<={th}]+bestaudio/best/best" if th else "bestvideo+bestaudio/best"
         ydl_opts = get_ytdlp_opts(cookie, extra={
             "format": format_spec, "outtmpl": output_template, "merge_output_format": "mp4", "extractor_args": ea,
         })
@@ -171,20 +173,17 @@ def download():
     output_dir = tempfile.mkdtemp(dir=TEMP_DIR)
     cookie_file = json_cookies_to_netscape(COOKIES_FILE)
 
-    info_dict, err_msg = None, ""
+    info_dict = None
+    err_msg = ""
 
-    # Try 1: Android Client download
-    try:
-        info_dict = run_download(norm_url, quality, output_dir, None, android_extractor_args())
-    except Exception as e:
-        err_msg = f"Android Client Error: {str(e)}"
-
-    # Try 2: Web Client download (with cookies fallback)
-    if not info_dict and cookie_file:
+    # Multi-strategy execution loops for download client redundancy
+    for strategy in get_client_strategies():
         try:
-            info_dict = run_download(norm_url, quality, output_dir, cookie_file, web_extractor_args())
+            info_dict = run_download(norm_url, quality, output_dir, cookie_file, strategy)
+            if info_dict:
+                break
         except Exception as e:
-            err_msg += f" | Web Client Error: {str(e)}"
+            err_msg += f"[{strategy['youtube']['player_client'][0]}: {str(e)}] "
 
     if cookie_file and os.path.exists(cookie_file):
         try: os.unlink(cookie_file)
@@ -196,7 +195,7 @@ def download():
         shutil.rmtree(output_dir, ignore_errors=True)
         return jsonify({
             "error": "Download failed.",
-            "details": err_msg if err_msg else "No files generated."
+            "details": err_msg if err_msg else "All clients exhausted. Please verify cookies."
         }), 500
 
     filepath = os.path.join(output_dir, files[0])
@@ -220,4 +219,4 @@ def download():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
-                      
+    
