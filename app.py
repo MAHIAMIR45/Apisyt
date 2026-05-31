@@ -56,7 +56,11 @@ def json_cookies_to_netscape(json_path: str) -> str:
             flag = 'FALSE' if c.get('hostOnly') else 'TRUE'
             path = c.get('path', '/')
             secure = 'TRUE' if c.get('secure') else 'FALSE'
-            expires = int(c.get('expirationDate', 0))
+            
+            # Expiration date handling for floats and ints
+            expires_val = c.get('expirationDate', 0)
+            expires = int(float(expires_val)) if expires_val else 0
+            
             name = c.get('name', '')
             value = c.get('value', '')
             tmp.write(f"{domain}\t{flag}\t{path}\t{secure}\t{expires}\t{name}\t{value}\n")
@@ -76,9 +80,7 @@ def get_ytdlp_opts(cookie_file: str = None, extra: dict = None) -> dict:
         "extractor_retries": 5,
         "http_headers": {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.9",
-            "Sec-Fetch-Mode": "navigate",
         }
     }
     if cookie_file:
@@ -87,11 +89,10 @@ def get_ytdlp_opts(cookie_file: str = None, extra: dict = None) -> dict:
         opts.update(extra)
     return opts
 
-# Alag alag legacy and modern structures ka secure extraction mix
 def get_client_strategies():
     return [
-        {"youtube": {"player_client": ["web_embedded"], "skip": []}},
         {"youtube": {"player_client": ["tvhtml5"], "skip": []}},
+        {"youtube": {"player_client": ["web_embedded"], "skip": []}},
         {"youtube": {"player_client": ["android"], "skip": []}},
         {"youtube": {"player_client": ["web"], "skip": []}}
     ]
@@ -115,7 +116,6 @@ def info():
     info_dict = None
     err_logs = []
     
-    # Iterate through multiple strategies until one hits
     for strategy in get_client_strategies():
         try:
             opts = get_ytdlp_opts(cookie_file, extra={"extractor_args": strategy})
@@ -131,7 +131,7 @@ def info():
 
     if not info_dict:
         return jsonify({
-            "error": "Failed to get info from all parameters.",
+            "error": "Failed to get info.",
             "details": " | ".join(err_logs[:2])
         }), 500
 
@@ -152,8 +152,11 @@ def run_download(norm_url, quality, output_dir, cookie, ea):
         })
     else:
         th = QUALITY_MAP[quality]
-        # Robust stream processing: Agar specialized streams block hon toh raw merge ya single progressive handle ho sake
-        format_spec = f"bestvideo[height<={th}][ext=mp4]+bestaudio[ext=m4a]/best[height<={th}][ext=mp4]/bestvideo[height<={th}]+bestaudio/best/best" if th else "bestvideo+bestaudio/best"
+        if th:
+            format_spec = f"best[height<={th}][ext=mp4]/bestvideo[height<={th}]+bestaudio/best"
+        else:
+            format_spec = "best[ext=mp4]/best"
+            
         ydl_opts = get_ytdlp_opts(cookie, extra={
             "format": format_spec, "outtmpl": output_template, "merge_output_format": "mp4", "extractor_args": ea,
         })
@@ -176,7 +179,6 @@ def download():
     info_dict = None
     err_msg = ""
 
-    # Multi-strategy execution loops for download client redundancy
     for strategy in get_client_strategies():
         try:
             info_dict = run_download(norm_url, quality, output_dir, cookie_file, strategy)
@@ -195,7 +197,7 @@ def download():
         shutil.rmtree(output_dir, ignore_errors=True)
         return jsonify({
             "error": "Download failed.",
-            "details": err_msg if err_msg else "All clients exhausted. Please verify cookies."
+            "details": err_msg if err_msg else "All formats exhausted. Verify server cookies."
         }), 500
 
     filepath = os.path.join(output_dir, files[0])
