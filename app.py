@@ -74,7 +74,6 @@ def get_ytdlp_opts(cookie_file: str = None, extra: dict = None) -> dict:
         "socket_timeout": 30,             
         "retries": 10,                    
         "extractor_retries": 5,
-        # ERROR WALI LINE (IMPERSONATE) YAHA SE HATA DI HAI TAQEE CRASH NA HO
         "http_headers": {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
             "Accept-Language": "en-US,en;q=0.9",
@@ -110,7 +109,7 @@ def info():
 
     info_dict, err = None, "Unknown error"
     
-    # Try Android Strategy
+    # Strategy 1: Android Client (Bina cookies ke temporary check)
     try:
         opts = get_ytdlp_opts(None, extra={"extractor_args": android_extractor_args()})
         with yt_dlp.YoutubeDL(opts) as ydl:
@@ -118,7 +117,7 @@ def info():
     except Exception as e:
         err = str(e)
 
-    # Try Web Strategy if Android fails
+    # Strategy 2: Web Client (Cookies ke sath fallback)
     if not info_dict and cookie_file:
         try:
             opts = get_ytdlp_opts(cookie_file, extra={"extractor_args": web_extractor_args()})
@@ -151,7 +150,8 @@ def run_download(norm_url, quality, output_dir, cookie, ea):
         })
     else:
         th = QUALITY_MAP[quality]
-        format_spec = f"bestvideo[height<={th}][ext=mp4]+bestaudio[ext=m4a]/best[height<={th}][ext=mp4]/best" if th else "bestvideo+bestaudio/best"
+        # Flexible Fallbacks: Agar alag video+audio na miley toh single standard format auto-fetch ho jaye
+        format_spec = f"bestvideo[height<={th}][ext=mp4]+bestaudio[ext=m4a]/best[height<={th}][ext=mp4]/bestvideo[height<={th}]+bestaudio/best" if th else "bestvideo+bestaudio/best"
         ydl_opts = get_ytdlp_opts(cookie, extra={
             "format": format_spec, "outtmpl": output_template, "merge_output_format": "mp4", "extractor_args": ea,
         })
@@ -173,11 +173,13 @@ def download():
 
     info_dict, err_msg = None, ""
 
+    # Try 1: Android Client download
     try:
         info_dict = run_download(norm_url, quality, output_dir, None, android_extractor_args())
     except Exception as e:
         err_msg = f"Android Client Error: {str(e)}"
 
+    # Try 2: Web Client download (with cookies fallback)
     if not info_dict and cookie_file:
         try:
             info_dict = run_download(norm_url, quality, output_dir, cookie_file, web_extractor_args())
@@ -194,7 +196,7 @@ def download():
         shutil.rmtree(output_dir, ignore_errors=True)
         return jsonify({
             "error": "Download failed.",
-            "details": err_msg if err_msg else "No files generated. Please ensure FFmpeg buildpack or configuration is correct."
+            "details": err_msg if err_msg else "No files generated."
         }), 500
 
     filepath = os.path.join(output_dir, files[0])
@@ -218,3 +220,4 @@ def download():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
+                      
