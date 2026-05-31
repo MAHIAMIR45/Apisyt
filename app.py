@@ -5,6 +5,8 @@ import random
 import shutil
 import tempfile
 import threading
+import subprocess
+import time
 from flask import Flask, request, Response, jsonify
 from flask_cors import CORS
 import yt_dlp
@@ -106,25 +108,28 @@ def json_cookies_to_netscape(json_path: str) -> str:
 
 
 def get_ytdlp_opts(cookie_file: str, extra: dict = None) -> dict:
+    po_token = os.environ.get("PO_TOKEN", "").strip()
+
+    extractor_args = {
+        "player_client": ["web_creator", "web"],
+        "skip": ["translated_subs"],
+    }
+
+    # PO Token set hai to add karo — YouTube bot detection bypass
+    if po_token:
+        extractor_args["po_token"] = [f"web+{po_token}"]
+
     opts = {
         "cookiefile": cookie_file,
         "quiet": True,
         "noplaylist": True,
-        "proxy": get_random_proxy(),          # har request pe random proxy
-        "extractor_args": {
-            "youtube": {
-                # web_creator: YouTube Studio client — server pe reliable, cookies support karta hai
-                # mweb: mobile web — different rate limits
-                # web: last resort
-                "player_client": ["web_creator", "mweb", "web"],
-                "skip": ["translated_subs"],
-            }
-        },
+        "proxy": get_random_proxy(),
+        "extractor_args": {"youtube": extractor_args},
         "http_headers": {
             "User-Agent": (
-                "Mozilla/5.0 (Linux; Android 13; Pixel 7) "
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/116.0.0.0 Mobile Safari/537.36"
+                "Chrome/124.0.0.0 Safari/537.36"
             ),
             "Accept-Language": "en-US,en;q=0.9",
         },
