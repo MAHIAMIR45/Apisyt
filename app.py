@@ -57,7 +57,6 @@ def json_cookies_to_netscape(json_path: str) -> str:
             path = c.get('path', '/')
             secure = 'TRUE' if c.get('secure') else 'FALSE'
             
-            # Expiration date handling for floats and ints
             expires_val = c.get('expirationDate', 0)
             expires = int(float(expires_val)) if expires_val else 0
             
@@ -144,21 +143,28 @@ def info():
 
 def run_download(norm_url, quality, output_dir, cookie, ea):
     output_template = os.path.join(output_dir, "%(title)s.%(ext)s")
+    
+    # Format selection completely simplified to avoid strict missing format errors
     if quality == "audio":
-        format_spec = "bestaudio[ext=m4a]/bestaudio/best"
+        format_spec = "ba/bestaudio"
         ydl_opts = get_ytdlp_opts(cookie, extra={
-            "format": format_spec, "outtmpl": output_template, "extractor_args": ea,
+            "format": format_spec, 
+            "outtmpl": output_template, 
+            "extractor_args": ea,
             "postprocessors": [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "192"}]
         })
     else:
         th = QUALITY_MAP[quality]
         if th:
-            format_spec = f"best[height<={th}][ext=mp4]/bestvideo[height<={th}]+bestaudio/best"
+            format_spec = f"worstvideo[height>={th}]+bestaudio/best[height<={th}]/best"
         else:
-            format_spec = "best[ext=mp4]/best"
+            format_spec = "best"
             
         ydl_opts = get_ytdlp_opts(cookie, extra={
-            "format": format_spec, "outtmpl": output_template, "merge_output_format": "mp4", "extractor_args": ea,
+            "format": format_spec, 
+            "outtmpl": output_template, 
+            "merge_output_format": "mp4", 
+            "extractor_args": ea,
         })
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
