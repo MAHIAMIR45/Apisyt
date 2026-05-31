@@ -7,3 +7,6 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.0
+      - key: PROXY_URL
+        value: ""   # Yahan proxy URL daalo — e.g. http://user:pass@host:port
+        
