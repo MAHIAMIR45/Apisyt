@@ -1,22 +1,22 @@
 import time
-import json
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse
 import requests
 
 app = FastAPI(title="YouTube Downloader API")
 
-# Better Headers
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Mobile Safari/537.36",
     "Accept": "application/json, text/plain, */*",
     "Referer": "https://app.ytdown.to/"
 }
 
+# Dono routes support karne ke liye
 @app.get("/api/download")
+@app.get("/download")   # ← Yeh naya add kiya
 def get_download_link(
     url: str = Query(..., description="YouTube Video URL"),
-    resolution: str = Query("720", description="Resolution: 360, 480, 720, 1080, 1440, 2160, mp3")
+    resolution: str = Query("720", description="360, 480, 720, 1080, 1440, 2160, mp3")
 ):
     if "youtu" not in url.lower():
         raise HTTPException(status_code=400, detail="Sirf YouTube URLs support hain.")
@@ -28,25 +28,38 @@ def get_download_link(
     session.headers.update(HEADERS)
 
     try:
-        # Step 1: Initial request
-        session.get("https://app.ytdown.to/en23/")
+        session.get("https://app.ytdown.to/en23/", timeout=10)
 
-        # Step 2: Send video URL
         payload = {"url": url}
         resp = session.post("https://app.ytdown.to/proxy.php", data=payload, timeout=20)
+        
+        if not resp.ok:
+            raise HTTPException(status_code=500, detail="Site se response nahi mila.")
+
         data = resp.json()
 
-        if "api" not in data or "mediaItems" not in data["api"]:
-            raise HTTPException(status_code=400, detail="Invalid YouTube URL ya site error.")
+        # Safety check
+        if not isinstance(data, dict) or "api" not in data:
+            raise HTTPException(status_code=400, detail="Invalid response from downloader site.")
 
-        title = data["api"].get("title", "YouTube Video")
-        media_items = data["api"].get("mediaItems", [])
+        api_data = data.get("api")
+        if not isinstance(api_data, dict):
+            raise HTTPException(status_code=400, detail="Unexpected response format.")
+
+        title = api_data.get("title", "YouTube Video")
+        media_items = api_data.get("mediaItems", [])
+
+        if not media_items:
+            raise HTTPException(status_code=404, detail="Koi media nahi mila. Video private/private ho sakti hai.")
 
         media_url = None
         actual_res = req_res
 
-        # Priority: Exact match first
+        # Exact match
         for item in media_items:
+            if not isinstance(item, dict):
+                continue
+                
             item_url = str(item.get("mediaUrl", "")).lower()
             item_type = item.get("type", "")
             item_ext = str(item.get("mediaExtension", "")).lower()
@@ -55,51 +68,48 @@ def get_download_link(
                 if item_type == "Audio" and ("mp3" in item_ext or "m4a" in item_ext):
                     media_url = item.get("mediaUrl")
                     actual_res = "mp3"
-                    print("✅ MP3 Exact Match Mila")
+                    print("✅ MP3 Found")
                     break
             else:
                 if item_type == "Video" and req_res in item_url:
                     media_url = item.get("mediaUrl")
                     actual_res = req_res
-                    print(f"✅ {req_res}p Exact Match Mila")
+                    print(f"✅ {req_res} Found")
                     break
 
-        # Fallback logic
+        # Fallback
         if not media_url:
             if req_res == "mp3":
-                # Best audio fallback
-                audio_items = [item for item in media_items if item.get("type") == "Audio"]
+                audio_items = [item for item in media_items if isinstance(item, dict) and item.get("type") == "Audio"]
                 if audio_items:
-                    media_url = audio_items[-1].get("mediaUrl")  # Best quality audio
+                    media_url = audio_items[-1].get("mediaUrl")
                     actual_res = "mp3"
-                    print("⚠️ MP3 Fallback use kiya")
             else:
-                # Best video fallback
-                video_items = [item for item in media_items if item.get("type") == "Video"]
+                video_items = [item for item in media_items if isinstance(item, dict) and item.get("type") == "Video"]
                 if video_items:
-                    media_url = video_items[0].get("mediaUrl")  # Highest available
+                    media_url = video_items[0].get("mediaUrl")
                     actual_res = "best"
-                    print("⚠️ Best Quality Fallback")
 
         if not media_url:
-            raise HTTPException(status_code=404, detail="Koi bhi quality nahi mili.")
+            raise HTTPException(status_code=404, detail=f"{req_res} quality nahi mili.")
 
-        # Step 3: Get final download link
-        final_payload = {"url": media_url}
-        final_resp = session.post("https://app.ytdown.to/proxy.php", data=final_payload, timeout=25)
+        # Final link
+        final_resp = session.post("https://app.ytdown.to/proxy.php", 
+                                data={"url": media_url}, timeout=25)
         final_data = final_resp.json()
 
-        if "api" in final_data and "fileUrl" in final_data["api"]:
-            return JSONResponse(content={
+        if isinstance(final_data, dict) and "api" in final_data and "fileUrl" in final_data["api"]:
+            return JSONResponse({
                 "success": True,
                 "title": title,
                 "resolution": actual_res,
-                "download_url": final_data["api"]["fileUrl"],
-                "message": "Direct download link ready!"
+                "download_url": final_data["api"]["fileUrl"]
             })
         else:
-            raise HTTPException(status_code=500, detail="Final link generate nahi ho saka.")
+            raise HTTPException(status_code=500, detail="Final download link nahi bana.")
 
+    except HTTPException as e:
+        raise
     except Exception as e:
         print(f"❌ Error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Server Error: {str(e)}")
