@@ -6,9 +6,9 @@ import yt_dlp
 app = Flask(__name__)
 CORS(app)
 
-BASE_DIR    = os.path.dirname(os.path.abspath(__file__))
-TEMP_DIR    = os.path.join(BASE_DIR, "temp_downloads")
-COOKIES_FILE= os.path.join(BASE_DIR, "cookies.json")
+BASE_DIR     = os.path.dirname(os.path.abspath(__file__))
+TEMP_DIR     = os.path.join(BASE_DIR, "temp_downloads")
+COOKIES_FILE = os.path.join(BASE_DIR, "cookies.json")
 os.makedirs(TEMP_DIR, exist_ok=True)
 
 _U = "gpxjaoxt"; _P = "trexu8zcabdr"
@@ -33,7 +33,7 @@ QUALITY_MAP = {
 }
 
 def sanitize(s):
-    return re.sub(r'[\\/*?:"<>|]',"_",s)[:180].strip()
+    return re.sub(r'[\\/*?:"<>|]', "_", s)[:180].strip()
 
 def normalize_url(url):
     url = url.strip()
@@ -60,14 +60,14 @@ def make_cookies(json_path):
     tmp.close()
     return tmp.name
 
-# ── Format strings — DASH/HLS skip karo (nsig crash avoid) ───────────────────
-def video_fmt(h):
+# ─── Format strings ────────────────────────────────────────────────────────────
+# DASH/HLS skip — nsig crash avoid (memory issue on Render free tier)
+# Audio: combined format se extract karo — DASH audio streams hati hain
+
+def fmt_video(h):
+    """h = height int ya None (best)"""
     if h is None:
-        return (
-            "best[protocol!=dash][protocol!=m3u8]"
-            "/bestvideo[protocol!=dash]+bestaudio[protocol!=dash]"
-            "/best"
-        )
+        return "best[protocol!=dash][protocol!=m3u8]/best"
     return (
         f"best[height<={h}][protocol!=dash][protocol!=m3u8]"
         f"/best[height<={h}]"
@@ -75,127 +75,107 @@ def video_fmt(h):
         f"/best"
     )
 
-AUDIO_FMT = (
-    "bestaudio[protocol!=dash][protocol!=m3u8][ext=m4a]"
-    "/bestaudio[protocol!=dash][protocol!=m3u8]"
-    "/bestaudio/best"
+# Audio: combined format download karo phir FFmpeg se extract — DASH nahi chahiye
+FMT_AUDIO_COMBINED = (
+    "best[protocol!=dash][protocol!=m3u8][ext=mp4]"
+    "/best[protocol!=dash][protocol!=m3u8]"
+    "/best"
 )
 
-# ── yt-dlp options ─────────────────────────────────────────────────────────────
-def mk_opts(proxy, cookie_file, fmt, outtmpl, audio=False):
-    extractor_args = {
-        "player_client": ["android"],
-        "formats": ["missing_pot"],   # GVS token warning bypass
-        # DASH/HLS skip — ye hi nsig crash karta tha
-        "skip": ["dash", "hls", "translated_subs"],
-    }
-    opts = {
-        "format":         fmt,
-        "outtmpl":        outtmpl,
-        "quiet":          True,
-        "no_warnings":    False,
-        "noplaylist":     True,
-        "proxy":          proxy,
-        "socket_timeout": 30,
-        "retries":        2,
-        "fragment_retries": 2,
-        "extractor_args": {"youtube": extractor_args},
-        "http_headers": {
-            "User-Agent": "com.google.android.youtube/19.09.37 (Linux; U; Android 13; en_US) gzip",
-        },
-        # Memory save
-        "concurrent_fragment_downloads": 1,
-        "buffersize": 16384,
-    }
-    if cookie_file:
-        opts["cookiefile"] = cookie_file
-    if audio:
-        opts["postprocessors"] = [{"key":"FFmpegExtractAudio","preferredcodec":"mp3","preferredquality":"192"}]
-        # Audio ke liye web_creator bhi try karo
-        extractor_args["player_client"] = ["android", "web_creator", "web"]
-    return opts
+# ─── yt-dlp opts ───────────────────────────────────────────────────────────────
+BASE_OPTS = {
+    "quiet":          True,
+    "noplaylist":     True,
+    "socket_timeout": 20,
+    "retries":        2,
+    "fragment_retries": 2,
+    "concurrent_fragment_downloads": 1,
+    "buffersize":     16384,
+    "noprogress":     True,
+}
 
-def mk_opts_web(proxy, cookie_file, fmt, outtmpl, audio=False):
-    """Web fallback — bhi DASH/HLS skip"""
-    extractor_args = {
-        "player_client": ["web_creator", "web"],
-        "skip": ["dash", "hls", "translated_subs"],
-    }
-    opts = {
-        "format":         fmt,
-        "outtmpl":        outtmpl,
-        "cookiefile":     cookie_file,
-        "quiet":          True,
-        "noplaylist":     True,
-        "proxy":          proxy,
-        "socket_timeout": 30,
-        "retries":        2,
-        "merge_output_format": "mp4",
-        "extractor_args": {"youtube": extractor_args},
-        "http_headers": {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36"
-            ),
-        },
-        "concurrent_fragment_downloads": 1,
-    }
-    if audio:
-        opts["postprocessors"] = [{"key":"FFmpegExtractAudio","preferredcodec":"mp3","preferredquality":"192"}]
-    return opts
+ANDROID_EXTRACTOR = {
+    "player_client": ["android"],
+    "formats":       ["missing_pot"],
+    "skip":          ["dash", "hls", "translated_subs"],
+}
 
+WEB_EXTRACTOR = {
+    "player_client": ["web_creator", "web"],
+    "skip":          ["dash", "hls", "translated_subs"],
+}
 
+def opts_android(proxy, fmt, outtmpl, postprocessors=None):
+    o = {**BASE_OPTS,
+         "format": fmt, "outtmpl": outtmpl, "proxy": proxy,
+         "extractor_args": {"youtube": ANDROID_EXTRACTOR},
+         "http_headers": {"User-Agent": "com.google.android.youtube/19.09.37 (Linux; U; Android 13; en_US) gzip"},
+    }
+    if postprocessors: o["postprocessors"] = postprocessors
+    return o
+
+def opts_web(proxy, cookie_file, fmt, outtmpl, postprocessors=None):
+    o = {**BASE_OPTS,
+         "format": fmt, "outtmpl": outtmpl,
+         "proxy": proxy, "cookiefile": cookie_file,
+         "merge_output_format": "mp4",
+         "extractor_args": {"youtube": WEB_EXTRACTOR},
+         "http_headers": {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0 Safari/537.36"},
+    }
+    if postprocessors: o["postprocessors"] = postprocessors
+    return o
+
+# ─── Download logic ────────────────────────────────────────────────────────────
 def do_download(norm_url, quality, output_dir, cookie_file):
     is_audio = (quality == "audio")
     h        = QUALITY_MAP.get(quality)
-    fmt      = AUDIO_FMT if is_audio else video_fmt(h)
-    outtmpl  = os.path.join(output_dir, "%(title)s.%(ext)s")
-    title    = "video"
+
+    if is_audio:
+        fmt = FMT_AUDIO_COMBINED
+        pps = [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "192"}]
+    else:
+        fmt = fmt_video(h)
+        pps = None
+
+    outtmpl = os.path.join(output_dir, "%(title)s___%(height)s.%(ext)s")
+
+    def clean_dir():
+        for f in os.listdir(output_dir):
+            try: os.unlink(os.path.join(output_dir, f))
+            except: pass
 
     for attempt in range(3):
         proxy = rand_proxy()
+
+        # Pass A: Android
         try:
-            # Pass 1: Android + no DASH
-            ydl_opts = mk_opts(proxy, None, fmt, outtmpl, audio=is_audio)
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            with yt_dlp.YoutubeDL(opts_android(proxy, fmt, outtmpl, pps)) as ydl:
                 info = ydl.extract_info(norm_url, download=True)
-                if info: title = info.get("title", title)
-            return title
+                return info.get("title","video"), info.get("height") or info.get("width")
         except Exception:
-            pass
+            clean_dir()
 
-        # Clean up partial files
-        for f in os.listdir(output_dir):
-            try: os.unlink(os.path.join(output_dir, f))
-            except: pass
-
+        # Pass B: Web + cookies
         try:
-            # Pass 2: Web + cookies + no DASH
-            ydl_opts = mk_opts_web(proxy, cookie_file, fmt, outtmpl, audio=is_audio)
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            with yt_dlp.YoutubeDL(opts_web(proxy, cookie_file, fmt, outtmpl, pps)) as ydl:
                 info = ydl.extract_info(norm_url, download=True)
-                if info: title = info.get("title", title)
-            return title
+                return info.get("title","video"), info.get("height") or info.get("width")
         except Exception:
-            pass
+            clean_dir()
 
-        # Clean for next attempt
-        for f in os.listdir(output_dir):
-            try: os.unlink(os.path.join(output_dir, f))
-            except: pass
-
-    raise Exception("3 attempts failed — please try again")
+    raise Exception("Download failed after 3 attempts — try another video or quality")
 
 
 @app.route("/")
 def index():
     return jsonify({
-        "name": "YouTube Downloader API v4.1",
+        "name": "YouTube Downloader API v4.2",
         "qualities": list(QUALITY_MAP.keys()),
+        "note": "Shorts sirf 1 quality mein hoti hain — actual quality filename mein show hogi",
         "examples": {
-            "720p":  "/download?url=https://youtu.be/VIDEO_ID&quality=720",
-            "360p":  "/download?url=https://youtu.be/VIDEO_ID&quality=360",
-            "audio": "/download?url=https://youtu.be/VIDEO_ID&quality=audio",
+            "720p":  "/download?url=https://youtu.be/ID&quality=720",
+            "360p":  "/download?url=https://youtu.be/ID&quality=360",
+            "audio": "/download?url=https://youtu.be/ID&quality=audio",
         }
     })
 
@@ -204,40 +184,37 @@ def qualities():
     return jsonify({"qualities": list(QUALITY_MAP.keys())})
 
 @app.route("/info")
-def info():
+def info_route():
     url = request.args.get("url","").strip()
     if not url: return jsonify({"error":"url chahiye"}), 400
-    norm_url = normalize_url(url)
+    norm_url    = normalize_url(url)
     cookie_file = make_cookies(COOKIES_FILE)
+    proxy       = rand_proxy()
     try:
-        opts = mk_opts(rand_proxy(), None, "best", "/tmp/info_%(id)s.%(ext)s")
-        opts["skip_download"] = True
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            try:
-                info_dict = ydl.extract_info(norm_url, download=False)
-            except Exception:
-                opts2 = mk_opts_web(rand_proxy(), cookie_file, "best", "/tmp/info2_%(id)s.%(ext)s")
-                opts2["skip_download"] = True
-                with yt_dlp.YoutubeDL(opts2) as ydl2:
-                    info_dict = ydl2.extract_info(norm_url, download=False)
+        try:
+            with yt_dlp.YoutubeDL({**BASE_OPTS,"proxy":proxy,"extractor_args":{"youtube":ANDROID_EXTRACTOR},"http_headers":{"User-Agent":"com.google.android.youtube/19.09.37 (Linux; U; Android 13; en_US) gzip"}}) as ydl:
+                d = ydl.extract_info(norm_url, download=False)
+        except Exception:
+            with yt_dlp.YoutubeDL({**BASE_OPTS,"proxy":proxy,"cookiefile":cookie_file,"extractor_args":{"youtube":WEB_EXTRACTOR},"http_headers":{"User-Agent":"Mozilla/5.0"}}) as ydl:
+                d = ydl.extract_info(norm_url, download=False)
 
-        duration = info_dict.get("duration")
-        seen = set(); resolutions = []
-        for fmt in info_dict.get("formats",[]):
-            h = fmt.get("height")
-            if h and h not in seen:
-                seen.add(h); resolutions.append({"height":h,"label":f"{h}p"})
-        resolutions.sort(key=lambda x: x["height"], reverse=True)
+        duration = d.get("duration")
+        seen = set(); res = []
+        for f in d.get("formats",[]):
+            hh = f.get("height")
+            if hh and hh not in seen:
+                seen.add(hh); res.append({"height":hh,"label":f"{hh}p"})
+        res.sort(key=lambda x: x["height"], reverse=True)
 
         return jsonify({
-            "title":       info_dict.get("title","Unknown"),
+            "title":       d.get("title","Unknown"),
             "duration":    duration,
-            "author":      info_dict.get("uploader") or info_dict.get("channel",""),
-            "views":       info_dict.get("view_count"),
-            "thumbnail":   info_dict.get("thumbnail",""),
+            "author":      d.get("uploader") or d.get("channel",""),
+            "views":       d.get("view_count"),
+            "thumbnail":   d.get("thumbnail",""),
             "is_short":    "/shorts/" in url or bool(duration and duration<=60),
-            "resolutions": resolutions,
-            "links": {q: f"/download?url={url}&quality={q}" for q in ["1080","720","480","360","audio"]},
+            "resolutions": res,
+            "links": {q:f"/download?url={url}&quality={q}" for q in ["1080","720","480","360","audio"]},
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -260,18 +237,28 @@ def download():
     cookie_file = make_cookies(COOKIES_FILE)
 
     try:
-        title = do_download(norm_url, quality, output_dir, cookie_file)
+        title, actual_h = do_download(norm_url, quality, output_dir, cookie_file)
 
-        files = [f for f in os.listdir(output_dir) if not f.endswith(('.part','.ytdl'))]
+        files = [f for f in os.listdir(output_dir)
+                 if not f.endswith(('.part','.ytdl','.json'))]
         if not files:
             return jsonify({"error":"File nahi bani"}), 500
 
-        filepath     = os.path.join(output_dir, files[0])
-        is_audio     = (quality=="audio")
-        safe_title   = sanitize(title)
-        filename     = f"{safe_title}.mp3" if is_audio else f"{safe_title}_{quality}p.mp4"
-        content_type = "audio/mpeg" if is_audio else "video/mp4"
-        filesize     = os.path.getsize(filepath)
+        filepath   = os.path.join(output_dir, files[0])
+        is_audio   = (quality == "audio")
+        safe_title = sanitize(title)
+
+        # Actual downloaded quality filename mein — same size issue clear hogi
+        if is_audio:
+            filename     = f"{safe_title}.mp3"
+            content_type = "audio/mpeg"
+        else:
+            # Actual height use karo agar available ho
+            q_label = f"{actual_h}p" if actual_h else f"{quality}p"
+            filename     = f"{safe_title}_{q_label}.mp4"
+            content_type = "video/mp4"
+
+        filesize = os.path.getsize(filepath)
 
         def stream():
             try:
@@ -281,12 +268,12 @@ def download():
                         if not chunk: break
                         yield chunk
             finally:
-                def _clean():
+                def _c():
                     try: shutil.rmtree(output_dir, ignore_errors=True)
                     except: pass
                     try: os.unlink(cookie_file)
                     except: pass
-                threading.Thread(target=_clean, daemon=True).start()
+                threading.Thread(target=_c, daemon=True).start()
 
         fn = sanitize(filename).encode("ascii","ignore").decode("ascii")
         return Response(stream(), headers={
@@ -294,6 +281,7 @@ def download():
             "Content-Type":        content_type,
             "Content-Length":      str(filesize),
             "X-Video-Quality":     quality,
+            "X-Actual-Height":     str(actual_h or ""),
         }, status=200)
 
     except Exception as e:
