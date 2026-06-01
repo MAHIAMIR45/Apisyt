@@ -1,15 +1,21 @@
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse
-import subprocess
-import json
+import requests
 
 app = FastAPI(title="YouTube Downloader API")
+
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36",
+    "Accept": "application/json, text/plain, */*",
+    "Referer": "https://app.ytdown.to/en32/",
+    "Origin": "https://app.ytdown.to"
+}
 
 @app.get("/download")
 @app.get("/api/download")
 def get_download_link(
     url: str = Query(..., description="YouTube Video URL"),
-    resolution: str = Query("720", description="360, 480, 720, 1080, 1440, 2160, mp3")
+    resolution: str = Query("720", description="360, 480, 720, 1080, mp3")
 ):
     if "youtu" not in url.lower():
         raise HTTPException(status_code=400, detail="Sirf YouTube URLs support hain.")
@@ -17,60 +23,84 @@ def get_download_link(
     req_res = resolution.lower().strip()
     print(f"\n🚀 Request: {url} | Quality: {req_res}")
 
+    session = requests.Session()
+    session.headers.update(HEADERS)
+
     try:
-        # yt-dlp command
-        cmd = ["yt-dlp", "--dump-json", url]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        base_url = "https://app.ytdown.to/en32/"
+        session.get(base_url, timeout=10)
 
-        if result.returncode != 0:
-            raise HTTPException(status_code=400, detail="Video info nahi mili.")
+        # First request
+        payload = {"url": url}
+        resp = session.post("https://app.ytdown.to/proxy.php", data=payload, timeout=20)
+        data = resp.json()
 
-        info = json.loads(result.stdout)
+        if not isinstance(data, dict) or "api" not in data:
+            raise HTTPException(status_code=400, detail="Site se response nahi mila.")
 
-        title = info.get("title", "YouTube Video")
-        formats = info.get("formats", [])
+        api_data = data["api"]
+        title = api_data.get("title", "YouTube Video")
+        media_items = api_data.get("mediaItems", []) or api_data.get("formats", [])
 
-        download_url = None
+        if not media_items:
+            raise HTTPException(status_code=404, detail="Video ke formats nahi mile. Video private/restricted ho sakti hai.")
+
+        media_url = None
         actual_res = req_res
 
-        if req_res == "mp3":
-            # Best audio
-            audio_formats = [f for f in formats if f.get("acodec") != "none" and f.get("vcodec") == "none"]
-            if audio_formats:
-                best_audio = max(audio_formats, key=lambda x: x.get("abr", 0) or 0)
-                download_url = best_audio.get("url")
-                actual_res = "mp3"
-        else:
-            # Video with specific resolution
-            target_height = int(req_res) if req_res.isdigit() else 720
-            video_formats = [f for f in formats if f.get("vcodec") != "none" and f.get("height")]
-            
-            # Exact match
-            for f in sorted(video_formats, key=lambda x: x.get("height", 0), reverse=True):
-                if f.get("height") == target_height and f.get("ext") in ["mp4", "webm"]:
-                    download_url = f.get("url")
-                    actual_res = str(f.get("height"))
-                    break
-            
-            # Fallback to best
-            if not download_url and video_formats:
-                best = max(video_formats, key=lambda x: x.get("height", 0))
-                download_url = best.get("url")
-                actual_res = "best"
+        # Improved matching
+        for item in media_items:
+            if not isinstance(item, dict):
+                continue
+            m_url = item.get("mediaUrl") or item.get("url")
+            m_type = str(item.get("type", "")).lower()
+            m_ext = str(item.get("mediaExtension", "")).lower()
+            m_res = str(item.get("resolution", "")).lower()
 
-        if not download_url:
+            if req_res == "mp3":
+                if "audio" in m_type or "m4a" in m_ext or "mp3" in m_ext:
+                    media_url = m_url
+                    actual_res = "mp3"
+                    break
+            else:
+                if req_res in m_res or req_res in str(item):
+                    media_url = m_url
+                    actual_res = req_res
+                    break
+
+        # Fallback
+        if not media_url:
+            if req_res == "mp3":
+                for item in media_items:
+                    if isinstance(item, dict) and ("audio" in str(item.get("type", "")).lower() or "m4a" in str(item.get("mediaExtension", "")).lower()):
+                        media_url = item.get("mediaUrl") or item.get("url")
+                        break
+            else:
+                for item in media_items:
+                    if isinstance(item, dict):
+                        media_url = item.get("mediaUrl") or item.get("url")
+                        break
+
+        if not media_url:
             raise HTTPException(status_code=404, detail=f"{req_res} quality nahi mili.")
 
-        return JSONResponse({
-            "success": True,
-            "title": title,
-            "resolution": actual_res,
-            "download_url": download_url
-        })
+        # Final direct link
+        final_resp = session.post("https://app.ytdown.to/proxy.php", data={"url": media_url}, timeout=25)
+        final_data = final_resp.json()
+
+        if isinstance(final_data, dict) and "api" in final_data and "fileUrl" in final_data["api"]:
+            return JSONResponse({
+                "success": True,
+                "title": title,
+                "resolution": actual_res,
+                "download_url": final_data["api"]["fileUrl"]
+            })
+        else:
+            raise HTTPException(status_code=500, detail="Final link nahi bana.")
 
     except Exception as e:
         print(f"❌ Error: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Server Error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Site busy hai ya temporary error. Thodi der baad try karo.")
 
 
 if __name__ == "__main__":
