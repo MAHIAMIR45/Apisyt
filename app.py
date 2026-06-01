@@ -224,7 +224,7 @@ def info():
 @app.route("/download")
 def download():
     url     = request.args.get("url", "").strip()
-    quality = request.args.get("quality", "720").strip()
+    quality = request.args.get("quality", "720").strip().lower().replace("p", "")
 
     if not url:
         return jsonify({"error": "url parameter zaroor chahiye"}), 400
@@ -244,34 +244,44 @@ def download():
                 "outtmpl": output_template,
                 "postprocessors": [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "192"}],
             }
+            extra_web = extra
         else:
             h = QUALITY_MAP[quality]
-            fmt = (
+            # Android ke liye: combined format (Shorts mein separate streams nahi hote)
+            fmt_android = (
+                f"best[height<={h}]/best" if h else "best"
+            )
+            # Web fallback ke liye: merge approach
+            fmt_web = (
                 f"bestvideo[height<={h}]+bestaudio/best[height<={h}]/bestvideo+bestaudio/best"
                 if h else "bestvideo+bestaudio/best"
             )
             extra = {
-                "format": fmt,
+                "format": fmt_android,
+                "outtmpl": output_template,
+            }
+            extra_web = {
+                "format": fmt_web,
                 "outtmpl": output_template,
                 "merge_output_format": "mp4",
             }
 
         video_title = "video"
 
-        # Pass 1: Android
+        # Pass 1: Android — Shorts ke liye best (combined format)
         try:
             ydl_opts = opts_android(extra)
-            ydl_opts["progress_hooks"] = [lambda d: None]
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info_dict = ydl.extract_info(norm_url, download=True)
                 if info_dict:
                     video_title = info_dict.get("title", video_title)
-        except Exception as e1:
-            # Pass 2: Web + cookies fallback
+        except Exception:
+            # Pass 2: Web + cookies — merge format
             shutil.rmtree(output_dir, ignore_errors=True)
             output_dir = tempfile.mkdtemp(dir=TEMP_DIR)
-            extra["outtmpl"] = os.path.join(output_dir, "%(title)s.%(ext)s")
-            ydl_opts = opts_web(cookie_file, extra)
+            fallback_extra = extra_web if quality != "audio" else extra
+            fallback_extra["outtmpl"] = os.path.join(output_dir, "%(title)s.%(ext)s")
+            ydl_opts = opts_web(cookie_file, fallback_extra)
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info_dict = ydl.extract_info(norm_url, download=True)
                 if info_dict:
