@@ -1,4 +1,3 @@
-import time
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse
 import requests
@@ -11,12 +10,11 @@ HEADERS = {
     "Referer": "https://app.ytdown.to/"
 }
 
-# Dono routes support karne ke liye
+@app.get("/download")
 @app.get("/api/download")
-@app.get("/download")   # ← Yeh naya add kiya
 def get_download_link(
     url: str = Query(..., description="YouTube Video URL"),
-    resolution: str = Query("720", description="360, 480, 720, 1080, 1440, 2160, mp3")
+    resolution: str = Query("720", description="360, 480, 720, 1080, mp3")
 ):
     if "youtu" not in url.lower():
         raise HTTPException(status_code=400, detail="Sirf YouTube URLs support hain.")
@@ -28,74 +26,71 @@ def get_download_link(
     session.headers.update(HEADERS)
 
     try:
-        session.get("https://app.ytdown.to/en23/", timeout=10)
+        # Updated base URL (site changed)
+        base_url = "https://app.ytdown.to/en32/"   # ← Updated yahan
+        session.get(base_url, timeout=10)
 
         payload = {"url": url}
         resp = session.post("https://app.ytdown.to/proxy.php", data=payload, timeout=20)
         
         if not resp.ok:
-            raise HTTPException(status_code=500, detail="Site se response nahi mila.")
+            raise HTTPException(status_code=502, detail="Downloader site busy hai.")
 
         data = resp.json()
 
-        # Safety check
         if not isinstance(data, dict) or "api" not in data:
-            raise HTTPException(status_code=400, detail="Invalid response from downloader site.")
+            raise HTTPException(status_code=400, detail="Site se invalid response aaya.")
 
-        api_data = data.get("api")
-        if not isinstance(api_data, dict):
-            raise HTTPException(status_code=400, detail="Unexpected response format.")
-
+        api_data = data["api"]
         title = api_data.get("title", "YouTube Video")
         media_items = api_data.get("mediaItems", [])
 
         if not media_items:
-            raise HTTPException(status_code=404, detail="Koi media nahi mila. Video private/private ho sakti hai.")
+            raise HTTPException(status_code=404, detail="Is video ke liye media nahi mila (private ya restricted ho sakti hai).")
 
         media_url = None
         actual_res = req_res
 
-        # Exact match
+        # Better matching logic
         for item in media_items:
-            if not isinstance(item, dict):
+            if not isinstance(item, dict): 
                 continue
-                
             item_url = str(item.get("mediaUrl", "")).lower()
-            item_type = item.get("type", "")
+            item_type = str(item.get("type", "")).lower()
             item_ext = str(item.get("mediaExtension", "")).lower()
 
             if req_res == "mp3":
-                if item_type == "Audio" and ("mp3" in item_ext or "m4a" in item_ext):
+                if "audio" in item_type and ("mp3" in item_ext or "m4a" in item_ext):
                     media_url = item.get("mediaUrl")
                     actual_res = "mp3"
-                    print("✅ MP3 Found")
                     break
             else:
-                if item_type == "Video" and req_res in item_url:
+                if "video" in item_type and req_res in item_url:
                     media_url = item.get("mediaUrl")
                     actual_res = req_res
-                    print(f"✅ {req_res} Found")
                     break
 
-        # Fallback
+        # Strong Fallback
         if not media_url:
             if req_res == "mp3":
-                audio_items = [item for item in media_items if isinstance(item, dict) and item.get("type") == "Audio"]
-                if audio_items:
-                    media_url = audio_items[-1].get("mediaUrl")
-                    actual_res = "mp3"
+                for item in media_items:
+                    if isinstance(item, dict) and "audio" in str(item.get("type", "")).lower():
+                        media_url = item.get("mediaUrl")
+                        actual_res = "mp3"
+                        break
             else:
-                video_items = [item for item in media_items if isinstance(item, dict) and item.get("type") == "Video"]
-                if video_items:
-                    media_url = video_items[0].get("mediaUrl")
-                    actual_res = "best"
+                for item in media_items:
+                    if isinstance(item, dict) and "video" in str(item.get("type", "")).lower():
+                        media_url = item.get("mediaUrl")
+                        actual_res = "best"
+                        break
 
         if not media_url:
-            raise HTTPException(status_code=404, detail=f"{req_res} quality nahi mili.")
+            raise HTTPException(status_code=404, detail=f"{req_res} quality abhi available nahi hai.")
 
-        # Final link
+        # Get final direct link
         final_resp = session.post("https://app.ytdown.to/proxy.php", 
-                                data={"url": media_url}, timeout=25)
+                                data={"url": media_url}, timeout=30)
         final_data = final_resp.json()
 
         if isinstance(final_data, dict) and "api" in final_data and "fileUrl" in final_data["api"]:
@@ -106,10 +101,8 @@ def get_download_link(
                 "download_url": final_data["api"]["fileUrl"]
             })
         else:
-            raise HTTPException(status_code=500, detail="Final download link nahi bana.")
+            raise HTTPException(status_code=500, detail="Final link generate nahi ho saka.")
 
-    except HTTPException as e:
-        raise
     except Exception as e:
         print(f"❌ Error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Server Error: {str(e)}")
